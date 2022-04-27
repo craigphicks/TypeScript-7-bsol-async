@@ -5517,6 +5517,75 @@ declare namespace ts {
     }
     type InvalidatedProject<T extends BuilderProgram> = UpdateOutputFileStampsProject | BuildInvalidedProject<T> | UpdateBundleProject<T>;
 }
+declare namespace ts {
+    interface SolutionBuilderHostBaseAsync<T extends BuilderProgram> extends ProgramHost<T> {
+        createDirectory?(path: string): void;
+        /**
+         * Should provide create directory and writeFile if done of invalidatedProjects is not invoked with
+         * writeFileCallback
+         */
+        writeFile?(path: string, data: string, writeByteOrderMark?: boolean): void;
+        getCustomTransformersAsync?: (project: string, program?: Program) => Promise<CustomTransformers | undefined>;
+        getModifiedTime(fileName: string): Date | undefined;
+        setModifiedTime(fileName: string, date: Date): void;
+        deleteFile(fileName: string): void;
+        getParsedCommandLine?(fileName: string): ParsedCommandLine | undefined;
+        reportDiagnostic: DiagnosticReporter;
+        reportSolutionBuilderStatus: DiagnosticReporter;
+        afterProgramEmitAndDiagnosticsAsync?(program: T): Promise<void>;
+        afterEmitBundleAsync?(config: ParsedCommandLine): Promise<void>;
+    }
+    interface SolutionBuilderHostAsync<T extends BuilderProgram> extends SolutionBuilderHostBaseAsync<T> {
+        reportErrorSummary?: ReportEmitErrorSummary;
+    }
+    interface SolutionBuilderWithWatchHostAsync<T extends BuilderProgram> extends SolutionBuilderHostBaseAsync<T>, WatchHost {
+    }
+    interface SolutionBuilderAsync<T extends BuilderProgram> {
+        buildAsync(project?: string, cancellationToken?: CancellationToken, writeFile?: WriteFileCallback, getCustomTransformers?: (project: string) => CustomTransformers): Promise<ExitStatus>;
+        clean(project?: string): ExitStatus;
+        buildReferencesAsync(project: string, cancellationToken?: CancellationToken, writeFile?: WriteFileCallback, getCustomTransformers?: (project: string) => CustomTransformers): Promise<ExitStatus>;
+        cleanReferences(project?: string): ExitStatus;
+        getNextInvalidatedProject(cancellationToken?: CancellationToken): InvalidatedProjectAsync<T> | undefined;
+    }
+    function createSolutionBuilderHostAsync<T extends BuilderProgram = EmitAndSemanticDiagnosticsBuilderProgram>(system?: System, createProgram?: CreateProgram<T>, reportDiagnostic?: DiagnosticReporter, reportSolutionBuilderStatus?: DiagnosticReporter, reportErrorSummary?: ReportEmitErrorSummary): SolutionBuilderHostAsync<T>;
+    function createSolutionBuilderWithWatchHostAsync<T extends BuilderProgram = EmitAndSemanticDiagnosticsBuilderProgram>(system?: System, createProgram?: CreateProgram<T>, reportDiagnostic?: DiagnosticReporter, reportSolutionBuilderStatus?: DiagnosticReporter, reportWatchStatus?: WatchStatusReporter): SolutionBuilderWithWatchHostAsync<T>;
+    function createSolutionBuilderAsync<T extends BuilderProgram>(host: SolutionBuilderHost<T>, rootNames: readonly string[], defaultOptions: BuildOptions): SolutionBuilderAsync<T>;
+    function createSolutionBuilderWithWatchAsync<T extends BuilderProgram>(host: SolutionBuilderWithWatchHost<T>, rootNames: readonly string[], defaultOptions: BuildOptions, baseWatchOptions?: WatchOptions): SolutionBuilderAsync<T>;
+    interface InvalidatedProjectBaseAsync {
+        readonly kind: InvalidatedProjectKind;
+        readonly project: ResolvedConfigFileName;
+        /**
+         *  To dispose this project and ensure that all the necessary actions are taken and state is updated accordingly
+         */
+        doneAsync(cancellationToken?: CancellationToken, writeFile?: WriteFileCallback, customTransformers?: CustomTransformers): Promise<ExitStatus>;
+        getCompilerOptions(): CompilerOptions;
+        getCurrentDirectory(): string;
+    }
+    interface UpdateOutputFileStampsProjectAsync extends InvalidatedProjectBaseAsync {
+        readonly kind: InvalidatedProjectKind.UpdateOutputFileStamps;
+        updateOutputFileStatmps(): void;
+    }
+    interface BuildInvalidedProjectAsync<T extends BuilderProgram> extends InvalidatedProjectBaseAsync {
+        readonly kind: InvalidatedProjectKind.Build;
+        getBuilderProgramAsync(): Promise<T | undefined>;
+        getProgramAsync(): Promise<Program | undefined>;
+        getSourceFileAsync(fileName: string): Promise<SourceFile | undefined>;
+        getSourceFilesAsync(): Promise<readonly SourceFile[]>;
+        getOptionsDiagnosticsAsync(cancellationToken?: CancellationToken): Promise<readonly Diagnostic[]>;
+        getGlobalDiagnosticsAsync(cancellationToken?: CancellationToken): Promise<readonly Diagnostic[]>;
+        getConfigFileParsingDiagnosticsAsync(): Promise<readonly Diagnostic[]>;
+        getSyntacticDiagnosticsAsync(sourceFile?: SourceFile, cancellationToken?: CancellationToken): Promise<readonly Diagnostic[]>;
+        getAllDependenciesAsync(sourceFile: SourceFile): Promise<readonly string[]>;
+        getSemanticDiagnosticsAsync(sourceFile?: SourceFile, cancellationToken?: CancellationToken): Promise<readonly Diagnostic[]>;
+        getSemanticDiagnosticsOfNextAffectedFileAsync(cancellationToken?: CancellationToken, ignoreSourceFile?: (sourceFile: SourceFile) => boolean): Promise<AffectedFileResult<readonly Diagnostic[]>>;
+        emitAsync(targetSourceFile?: SourceFile, writeFile?: WriteFileCallback, cancellationToken?: CancellationToken, emitOnlyDtsFiles?: boolean, customTransformers?: CustomTransformers): Promise<EmitResult | undefined>;
+    }
+    interface UpdateBundleProjectAsync<T extends BuilderProgram> extends InvalidatedProjectBaseAsync {
+        readonly kind: InvalidatedProjectKind.UpdateBundle;
+        emitAsync(writeFile?: WriteFileCallback, customTransformers?: CustomTransformers): Promise<EmitResult | BuildInvalidedProjectAsync<T> | undefined>;
+    }
+    type InvalidatedProjectAsync<T extends BuilderProgram> = UpdateOutputFileStampsProjectAsync | BuildInvalidedProjectAsync<T> | UpdateBundleProjectAsync<T>;
+}
 declare namespace ts.server {
     type ActionSet = "action::set";
     type ActionInvalidate = "action::invalidate";

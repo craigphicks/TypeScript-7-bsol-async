@@ -78,7 +78,7 @@ namespace ts {
     //     fileName: string;
     //     line: number;
     // }
-    type SolutionBuilderHostBase<T extends BuilderProgram> = never & T;
+    //type SolutionBuilderHostBase<T extends BuilderProgram> = never & T;
     export interface SolutionBuilderHostBaseAsync<T extends BuilderProgram> extends ProgramHost<T> {
         createDirectory?(path: string): void;
         /**
@@ -101,16 +101,16 @@ namespace ts {
         // TODO: To do better with watch mode and normal build mode api that creates program and emits files
         // This currently helps enable --diagnostics and --extendedDiagnostics
         afterProgramEmitAndDiagnosticsAsync?(program: T): Promise<void>;
-        /*@internal*/ afterEmitBundle?(config: ParsedCommandLine): void;
+        afterEmitBundleAsync?(config: ParsedCommandLine): Promise<void>;
 
         // For testing
         /*@internal*/ now?(): Date;
     }
-    type SolutionBuilderHost<T extends BuilderProgram> = never & T;
+    // type SolutionBuilderHost<T extends BuilderProgram> = never & T;
     export interface SolutionBuilderHostAsync<T extends BuilderProgram> extends SolutionBuilderHostBaseAsync<T> {
         reportErrorSummary?: ReportEmitErrorSummary;
     }
-    type SolutionBuilderWithWatchHost<T extends BuilderProgram> = never & T;
+    // type SolutionBuilderWithWatchHost<T extends BuilderProgram> = never & T;
     export interface SolutionBuilderWithWatchHostAsync<T extends BuilderProgram> extends SolutionBuilderHostBaseAsync<T>, WatchHost {
     }
 
@@ -124,12 +124,12 @@ namespace ts {
     /*@ internal*/
     //export type AnyBuildOrder = BuildOrder | CircularBuildOrder;
 
-    // /*@internal*/
+    // /*@ internal*/
     // export function isCircularBuildOrder(buildOrder: AnyBuildOrder): buildOrder is CircularBuildOrder {
     //     return !!buildOrder && !!(buildOrder as CircularBuildOrder).buildOrder;
     // }
 
-    // /*@internal*/
+    // /*@ internal*/
     // export function getBuildOrderFromAnyBuildOrder(anyBuildOrder: AnyBuildOrder): BuildOrder {
     //     return isCircularBuildOrder(anyBuildOrder) ? anyBuildOrder.buildOrder : anyBuildOrder;
     // }
@@ -213,7 +213,6 @@ namespace ts {
         originalReadFileWithCache: CompilerHost["readFile"];
         originalGetSourceFile: CompilerHost["getSourceFile"];
     }
-    type SolutionBuilderState<T extends BuilderProgram = BuilderProgram> = never & T;
     interface SolutionBuilderStateAsync<T extends BuilderProgram = BuilderProgram> extends WatchFactory<WatchType, ResolvedConfigFileName> {
         readonly host: SolutionBuilderHostAsync<T>;
         readonly hostWithWatch: SolutionBuilderWithWatchHostAsync<T>;
@@ -625,7 +624,7 @@ namespace ts {
     //     UpdateBundle,
     //     UpdateOutputFileStamps
     // }
-    type InvalidatedProjectBase = never;
+    //type InvalidatedProjectBase = never;
     export interface InvalidatedProjectBaseAsync {
         readonly kind: InvalidatedProjectKind;
         readonly project: ResolvedConfigFileName;
@@ -638,12 +637,12 @@ namespace ts {
         getCompilerOptions(): CompilerOptions;
         getCurrentDirectory(): string;
     }
-    type UpdateOutputFileStampsProject = never;
+    //type UpdateOutputFileStampsProject = never;
     export interface UpdateOutputFileStampsProjectAsync extends InvalidatedProjectBaseAsync {
         readonly kind: InvalidatedProjectKind.UpdateOutputFileStamps;
         updateOutputFileStatmps(): void;
     }
-    type BuildInvalidedProject<T extends BuilderProgram> = never & T;
+    // type BuildInvalidedProject<T extends BuilderProgram> = never & T;
     export interface BuildInvalidedProjectAsync<T extends BuilderProgram> extends InvalidatedProjectBaseAsync {
         readonly kind: InvalidatedProjectKind.Build;
         /*
@@ -674,12 +673,12 @@ namespace ts {
         // emitNextAffectedFile(writeFile?: WriteFileCallback, cancellationToken?: CancellationToken, customTransformers?: CustomTransformers): AffectedFileResult<EmitResult>;
     }
 
-    type UpdateBundleProject<T extends BuilderProgram> = never & T;
+    // type UpdateBundleProject<T extends BuilderProgram> = never & T;
     export interface UpdateBundleProjectAsync<T extends BuilderProgram> extends InvalidatedProjectBaseAsync {
         readonly kind: InvalidatedProjectKind.UpdateBundle;
-        emit(writeFile?: WriteFileCallback, customTransformers?: CustomTransformers): EmitResult | BuildInvalidedProject<T> | undefined;
+        emitAsync(writeFile?: WriteFileCallback, customTransformers?: CustomTransformers): Promise<EmitResult | BuildInvalidedProjectAsync<T> | undefined>;
     }
-    type InvalidatedProject<T extends BuilderProgram> = never & T;
+    //type InvalidatedProject<T extends BuilderProgram> = never & T;
     export type InvalidatedProjectAsync<T extends BuilderProgram> = UpdateOutputFileStampsProjectAsync | BuildInvalidedProjectAsync<T> | UpdateBundleProjectAsync<T>;
 
     function doneInvalidatedProject(
@@ -741,14 +740,14 @@ namespace ts {
         projectIndex: number,
         config: ParsedCommandLine,
         buildOrder: readonly ResolvedConfigFileName[],
-    ): BuildInvalidedProjectAsync<T> | UpdateBundleProject<T> {
+    ): BuildInvalidedProjectAsync<T> | UpdateBundleProjectAsync<T> {
         let step = kind === InvalidatedProjectKind.Build ? BuildStep.CreateProgram : BuildStep.EmitBundle;
         let program: T | undefined;
         let buildResult: BuildResultFlags | undefined;
         let invalidatedProjectOfBundle: BuildInvalidedProjectAsync<T> | undefined;
 
-        return kind === InvalidatedProjectKind.Build ?
-            {
+        if (kind === InvalidatedProjectKind.Build) {
+            return {
                 kind,
                 project,
                 projectPath,
@@ -814,8 +813,10 @@ namespace ts {
                     return /* await */ emitAsync(writeFile, cancellationToken, customTransformers);
                 },
                 doneAsync
-            } :
-            {
+            };
+        }
+        else {
+            return {
                 kind,
                 project,
                 projectPath,
@@ -827,7 +828,8 @@ namespace ts {
                     return /* await */ emitBundleAsync(writeFile, customTransformers);
                 },
                 doneAsync,
-            } as UpdateBundleProject<T>;
+            };
+        }
 
         async function doneAsync(cancellationToken?: CancellationToken, writeFile?: WriteFileCallback, customTransformers?: CustomTransformers) {
             await executeStepsAsync(BuildStep.Done, cancellationToken, writeFile, customTransformers);
@@ -1062,7 +1064,7 @@ namespace ts {
             return emitDiagnostics;
         }
 
-        async function emitBundleAsync(writeFileCallback?: WriteFileCallback, customTransformers?: CustomTransformers): Promise<EmitResult | BuildInvalidedProject<T> | undefined> {
+        async function emitBundleAsync(writeFileCallback?: WriteFileCallback, customTransformers?: CustomTransformers): Promise<EmitResult | BuildInvalidedProjectAsync<T> | undefined> {
             Debug.assert(kind === InvalidatedProjectKind.UpdateBundle);
             if (state.options.dry) {
                 reportStatus(state, Diagnostics.A_non_dry_build_would_update_output_of_project_0, project);
@@ -1097,7 +1099,7 @@ namespace ts {
                     projectIndex,
                     config,
                     buildOrder
-                ) as BuildInvalidedProject<T>;
+                ) as BuildInvalidedProjectAsync<T>;
             }
 
             // Actual Emit
@@ -1150,7 +1152,9 @@ namespace ts {
 
                     case BuildStep.BuildInvalidatedProjectOfBundle:
                         Debug.checkDefined(invalidatedProjectOfBundle);
-                        invalidatedProjectOfBundle!.doneAsync(cancellationToken, writeFile, customTransformers);
+                        if (invalidatedProjectOfBundle) {
+                            invalidatedProjectOfBundle.doneAsync(cancellationToken, writeFile, customTransformers);
+                        }
                         step = BuildStep.Done;
                         break;
 
@@ -1315,8 +1319,8 @@ namespace ts {
             }
             program.releaseProgram();
         }
-        else if (state.host.afterEmitBundle) {
-            state.host.afterEmitBundle(config);
+        else if (state.host.afterEmitBundleAsync) {
+            await state.host.afterEmitBundleAsync(config);
         }
         state.projectCompilerOptions = state.baseCompilerOptions;
     }

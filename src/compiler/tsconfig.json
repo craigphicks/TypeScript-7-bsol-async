@@ -80,6 +80,6 @@
         "watchPublic.ts",
         "tsbuild.ts",
         "tsbuildPublic.ts",
-        "tsbuildPublic-async.ts"
+        "tsbuildPublicAsync.ts"
     ]
 }
