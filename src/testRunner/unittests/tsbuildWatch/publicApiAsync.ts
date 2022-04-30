@@ -1,12 +1,9 @@
 namespace ts.tscWatch {
-
-    it("unittests:: tsbuildWatch:: asyncTest", async () => {});
-
-    it("unittests:: tsbuildWatch:: publicAPISync", async () => {
-
+    const verbose = false; // only set to true during development with this test function.
+    it("unittests:: tsbuildWatch:: publicAPIAsync", async () => {
         interface DeferredPromise {
-            waitable: Promise<void>;
-            resolve: () => void;
+            waitable: Promise<number>;
+            resolve: (x: number) => void;
         };
         function createDeferredPromise(): DeferredPromise{
             const dp: Partial<DeferredPromise>={};
@@ -15,8 +12,6 @@ namespace ts.tscWatch {
             });
             return dp as DeferredPromise;
         }
-
-
         const solution: File = {
             path: `${projectRoot}/tsconfig.json`,
             content: JSON.stringify({
@@ -32,6 +27,14 @@ namespace ts.tscWatch {
             content: JSON.stringify({
                 compilerOptions: { composite: true },
             })
+        };
+        const sharedIndexWithErr: File = {
+            path: `${projectRoot}/shared/index.ts`,
+            content: `export function f1() { }
+export class c { }
+export enum e { }
+// leading
+export function f1() { } // trailing`
         };
         const sharedIndex: File = {
             path: `${projectRoot}/shared/index.ts`,
@@ -56,7 +59,7 @@ export enum e2 { }
 // leading
 export function f22() { } // trailing`
         };
-        const sys1 = createWatchedSystem([libFile, solution, sharedConfig, sharedIndex, webpackConfig, webpackIndex], { currentDirectory: projectRoot });
+        const sys1 = createWatchedSystem([libFile, solution, sharedConfig, sharedIndexWithErr, webpackConfig, webpackIndex], { currentDirectory: projectRoot });
         // @ts-ignore
         const commandLineArgs = ["--b", "--w"];
         // @ts-ignore
@@ -65,91 +68,106 @@ export function f22() { } // trailing`
         sys.write = (()=>{
             const sysWriteOrig = (sys.write).bind(sys);
             return (message: string)=>{
-                console.log(message);
+                if (verbose) console.log(message);
                 sysWriteOrig(message);
             };
         })();
+        function testmsg(m: string){
+            sys.write(`test:: ${m+sys.newLine}`);
+        }
         const buildHost = createSolutionBuilderWithWatchHostAsync(sys,
             /*createProgram*/ undefined,
             createDiagnosticReporter(sys, /*pretty*/ true),
             createBuilderStatusReporter(sys, /*pretty*/ true),
             createWatchStatusReporter(sys, /*pretty*/ true)
         );
-
         const handshake = {
-            deferredPromise:createDeferredPromise()
+            settledErrorCount:createDeferredPromise()
         };
-
         buildHost.afterProgramEmitAndDiagnosticsAsync = async (program: EmitAndSemanticDiagnosticsBuilderProgram): Promise<void> =>{
             const configFilePath = program.getCompilerOptions().configFilePath??"<configFilePath is undefined>";
-            sys.write(`test:: afterProgramEmitAndDiagnosticsAsync: ${configFilePath}`);
+            testmsg(` afterProgramEmitAndDiagnosticsAsync: ${configFilePath}`);
         };
         buildHost.afterEmitBundleAsync = async (_config: ParsedCommandLine): Promise<void> => {
-            //const configFilePath = config.  //configFilePath??"<configFilePath is undefined>";
-            sys.write(`test:: afterEmitBundleAsync`);
+            testmsg(` afterEmitBundleAsync`);
         };
         buildHost.solutionSettledAsync = async (totalErrors: number) =>{
-            sys.write(`test:: solutionSettledAsync: totalErrors=${totalErrors}`);
-            handshake.deferredPromise.resolve();
+            testmsg(` solutionSettledAsync: totalErrors=${totalErrors}`);
+            handshake.settledErrorCount.resolve(totalErrors);
         };
         buildHost.getCustomTransformersAsync = getCustomTransformersAsync;
         const builder = createSolutionBuilderWithWatchAsync(buildHost, [solution.path], { verbose: true });
-        await Promise.race([
-            // ADDING THIS TIMEOUT CAUSES MOCHA TO HANG - even after successfull return from Promise.race.
-            // new Promise((_,reject)=>{
-            //     // eslint-disable-next-line no-restricted-globals
-            //     setTimeout(()=>{
-            //         reject(new Error(`test:: timeout`));
-            //     }, 999999 /* set low for normal test, set high when using debugger on this test */);
-            // }),
-            Promise.all([
-                (async ()=>{
-                    await builder.buildAsync();
-                    sys.write("test::  return from await builder.buildAsync()");
-                })(),
-                (async () => {
-                    await handshake.deferredPromise.waitable;
-                    handshake.deferredPromise = createDeferredPromise();
-                    sys.prependFile(sharedIndex.path, "export function fooBar() {}");
-                    sys.checkTimeoutQueueLengthAndRun(1);
-                    await handshake.deferredPromise.waitable;
-                    sys.write("test:: calling closeRequest from test code");
-                    builder.closeRequest();
-                })(),
-            ])
-        ]);
-        sys.write("test:: test is finished");
-        // async function myRunWatchBaseline(){
-        //     return runWatchBaselineAsync({
-        //         scenario: "publicApiSync",
-        //         subScenario: "with custom transformers",
-        //         commandLineArgs,
-        //         sys,
-        //         baseline,
-        //         oldSnap,
-        //         getPrograms,
-        //         changes: [
-        //             {
-        //                 caption: "change to shared",
-        //                 change: sys => sys.prependFile(sharedIndex.path, "export function fooBar() {}"),
-        //                 timeouts: sys => {
-        //                     sys.checkTimeoutQueueLengthAndRun(1); // Shared
-        //                     // sys.checkTimeoutQueueLengthAndRun(1); // webpack
-        //                     // sys.checkTimeoutQueueLengthAndRun(1); // solution
-        //                     // sys.checkTimeoutQueueLength(0);
-        //                 }
-        //             }
-        //         ],
-        //         // watchOrSolution: builder
-        //     });
-        // }
-
+        let builderBuildAsync: ReturnType< typeof builder.buildAsync>;
+        return runWatchBaselineAsync({
+            scenario: "publicApiAsync",
+            subScenario: "with custom transformers",
+            commandLineArgs,
+            sys,
+            baseline,
+            oldSnap,
+            getPrograms,
+            changes: [
+                {
+                    caption: "CHANGE:: builder.buildAsync()",
+                    change: () => { builderBuildAsync = builder.buildAsync(); },
+                    timeouts: async () => {
+                        const actual = await handshake.settledErrorCount.waitable; // wait for settled
+                        if (actual===0){
+                            throw new Error(`expected >0 errors but found ${actual}`);
+                        }
+                        sys.write(`test:: first settled detection, ${actual} error(s)`);
+                        handshake.settledErrorCount = createDeferredPromise();
+                    }
+                },
+                {
+                    caption: "CHANGE:: fix shared index",
+                    change: sys => sys.writeFile(sharedIndex.path, sharedIndex.content),
+                    timeouts: async () => {
+                        const timeoutId = sys.getNextTimeoutId();
+                        sys.write(`timeoutId=${timeoutId}`);
+                        sys.checkTimeoutQueueLengthAndRun(1); // file change watches pass through delay
+                        sys.checkTimeoutQueueLength(0);
+                        const actual = await handshake.settledErrorCount.waitable; // wait for settled
+                        if (actual!==0){
+                            throw new Error(`expected 0 errors but found ${actual}`);
+                        }
+                        sys.write(`test:: second settled detection, ${actual} error(s)`);
+                        handshake.settledErrorCount = createDeferredPromise();
+                    }
+                },
+                {
+                    caption: "CHANGE:: modify shared index",
+                    change: sys => sys.prependFile(sharedIndex.path, "export function fooBar() {}"),
+                    timeouts: async () => {
+                        const timeoutId = sys.getNextTimeoutId();
+                        sys.write(`timeoutId=${timeoutId}`);
+                        sys.checkTimeoutQueueLengthAndRun(1); // file change watches pass through delay
+                        sys.checkTimeoutQueueLength(0);
+                        const actual = await handshake.settledErrorCount.waitable; // wait for settled
+                        if (actual!==0){
+                            throw new Error(`expected 0 errors but found ${actual}`);
+                        }
+                        sys.write(`test:: third settled detection, ${actual} error(s)`);
+                        handshake.settledErrorCount = createDeferredPromise();
+                    }
+                },
+                {
+                    caption: "CHANGE:: builder.closeRequest()",
+                    change: () => { builder.closeRequest(); },
+                    timeouts: async () => {
+                        await builderBuildAsync;
+                        sys.write("test:: returned from await builder.buildAsync()");
+                    }
+                }
+            ],
+            // watchOrSolution: builder
+        });
         async function getCustomTransformersAsync(project: string, program?: Program): Promise<CustomTransformers> {
             const configFilePath = (()=>{
                 if (!program) return `<program is undefined>`;
                 return program.getCompilerOptions().configFilePath??"<configFilePath is undefined>";
             })();
-            sys.write(`test:: getCustomTransformersAsync: ${configFilePath}`);
+            testmsg(` getCustomTransformersAsync: ${configFilePath}`);
 
             const before: TransformerFactory<SourceFile> = context => {
                 return file => visitEachChild(file, visit, context);
@@ -166,7 +184,6 @@ export function f22() { } // trailing`
                     return node;
                 }
             };
-
             const after: TransformerFactory<SourceFile> = context => {
                 return file => visitEachChild(file, visit, context);
                 function visit(node: Node): VisitResult<Node> {

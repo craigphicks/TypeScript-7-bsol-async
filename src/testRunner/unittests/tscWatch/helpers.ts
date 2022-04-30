@@ -116,7 +116,7 @@ namespace ts.tscWatch {
             sys: TestFSWithWatch.TestServerHostTrackingWrittenFiles,
             programs: readonly CommandLineProgram[],
             watchOrSolution: WatchOrSolution<T>
-        ) => void;
+        ) => Promise<void> | void;
     }
     export interface TscWatchCheckOptions {
         baselineSourceMap?: boolean;
@@ -127,6 +127,12 @@ namespace ts.tscWatch {
         subScenario: string;
         commandLineArgs: readonly string[];
         changes: readonly TscWatchCompileChange<T>[];
+    }
+    export interface TscWatchCompileBaseAsync<T extends BuilderProgram = EmitAndSemanticDiagnosticsBuilderProgram> extends TscWatchCheckOptions {
+        scenario: string;
+        subScenario: string;
+        commandLineArgs: readonly string[];
+        changes: readonly TscWatchCompileChangeAsync<T>[];
     }
     export interface TscWatchCompile extends TscWatchCompileBase {
         sys: () => WatchedSystem;
@@ -301,7 +307,7 @@ namespace ts.tscWatch {
         }
         Harness.Baseline.runBaseline(`${isBuild(commandLineArgs) ? "tsbuild" : "tsc"}${isWatch(commandLineArgs) ? "Watch" : ""}/${scenario}/${subScenario.split(" ").join("-")}.js`, baseline.join("\r\n"));
     }
-    export interface RunWatchBaselineAsync<T extends BuilderProgram> extends BaselineBase, TscWatchCompileBase<T> {
+    export interface RunWatchBaselineAsync<T extends BuilderProgram> extends BaselineBase, TscWatchCompileBaseAsync<T> {
         sys: TestFSWithWatch.TestServerHostTrackingWrittenFiles;
         getPrograms: () => readonly CommandLineProgram[];
         // watchOrSolution: SolutionBuilderAsync;  // so far, not needed
@@ -325,7 +331,8 @@ namespace ts.tscWatch {
 
         for (const { caption, change, timeouts } of changes) {
             oldSnap = await applyChangeAsync(sys, baseline, change, caption);
-            timeouts(sys, programs);
+            const timeoutsResult = timeouts(sys, programs);
+            if (timeoutsResult instanceof Promise) await timeoutsResult;
             programs = watchBaseline({
                 baseline,
                 getPrograms,
