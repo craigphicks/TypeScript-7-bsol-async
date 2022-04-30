@@ -71,6 +71,7 @@ namespace ts {
     function newer(date1: Date, date2: Date): Date {
         return date2 > date1 ? date2 : date1;
     }
+    export type GetCustomTransformersAsync = (project: string,program?: Program) => Promise<CustomTransformers | undefined>;
 
     // export type ReportEmitErrorSummary = (errorCount: number, filesInError: (ReportFileInError | undefined)[]) => void;
 
@@ -80,6 +81,24 @@ namespace ts {
     // }
     //type SolutionBuilderHostBase<T extends BuilderProgram> = never & T;
     export interface SolutionBuilderHostBaseAsync<T extends BuilderProgram> extends ProgramHost<T> {
+        /**
+         * CreateProgramHookAsync is just an async wrapper whichs call inner non-async CreateProgram<T>.
+         * The purpose is to allow an async hook which can be used to call async user functions before or after non-async CreateProgram
+         * The user can override createProgramHookAsync like this:
+         * ```
+         * host.createProgramHookAsync = async (...args: Parameters<CreateProgram<T>>) => {
+         *    // optional user functions here
+         *    const p = host.createProgram(...args)
+         *    // optional user functions here
+         *    return p;
+         * }
+         * ```
+         * Note that this hook is not intended for transforms unless the entire "emit" is handled by the user.
+         * Generally a "getCustomTransformsAsync" hook (member or passed parameter) should be used for transforms.
+         * @param ...args: Parameters<CreateProgram<T>>
+         * @returns Promise<T>
+         */
+        createProgramHookAsync(...args: Parameters<CreateProgram<T>>): Promise<T>
         createDirectory?(path: string): void;
         /**
          * Should provide create directory and writeFile if done of invalidatedProjects is not invoked with
@@ -95,14 +114,20 @@ namespace ts {
         deleteFile(fileName: string): void;
         getParsedCommandLine?(fileName: string): ParsedCommandLine | undefined;
 
-        reportDiagnostic: DiagnosticReporter; // Technically we want to move it out and allow steps of actions on Solution, but for now just merge stuff in build host here
+        reportDiagnostic: DiagnosticReporter;
+        /**
+         * In the non-Async type of host SolutionBuilderHostBaseAsync, reportSolutionBuilderStatus could be used to
+         * build an ad-hoc synchronous hook to alert when the project was "settled".
+         * In this Async type of host "solutionSettledAsync" can be used for that purpose.
+         */
         reportSolutionBuilderStatus: DiagnosticReporter;
 
-        // TODO: To do better with watch mode and normal build mode api that creates program and emits files
-        // This currently helps enable --diagnostics and --extendedDiagnostics
+        /**
+         * afterProgramEmitAndDiagnosticsAsync / afterEmitBundleAsync
+         * are optional hooks called after emit (including transforms) are complete.
+         */
         afterProgramEmitAndDiagnosticsAsync?(program: T): Promise<void>;
         afterEmitBundleAsync?(config: ParsedCommandLine): Promise<void>;
-
         // For testing
         /*@internal*/ now?(): Date;
     }
@@ -112,59 +137,47 @@ namespace ts {
     }
     // type SolutionBuilderWithWatchHost<T extends BuilderProgram> = never & T;
     export interface SolutionBuilderWithWatchHostAsync<T extends BuilderProgram> extends SolutionBuilderHostBaseAsync<T>, WatchHost {
+        /**
+         * optional solutionSettled callback will be called when the solition has no more projectes to make, just before waiting for watch events.
+         * @param totalErrors
+         */
+        solutionSettledAsync? (totalErrors: number): Promise<void>;
     }
 
-    ///*@ internal*/
-    //export type BuildOrder = readonly ResolvedConfigFileName[];
-    /*@ internal*/
-    // export interface CircularBuildOrder {
-    //     buildOrder: BuildOrder;
-    //     circularDiagnostics: readonly Diagnostic[];
-    // }
-    /*@ internal*/
-    //export type AnyBuildOrder = BuildOrder | CircularBuildOrder;
-
-    // /*@ internal*/
-    // export function isCircularBuildOrder(buildOrder: AnyBuildOrder): buildOrder is CircularBuildOrder {
-    //     return !!buildOrder && !!(buildOrder as CircularBuildOrder).buildOrder;
-    // }
-
-    // /*@ internal*/
-    // export function getBuildOrderFromAnyBuildOrder(anyBuildOrder: AnyBuildOrder): BuildOrder {
-    //     return isCircularBuildOrder(anyBuildOrder) ? anyBuildOrder.buildOrder : anyBuildOrder;
-    // }
-
-    export interface SolutionBuilderAsync<T extends BuilderProgram> {
-        buildAsync(project?: string, cancellationToken?: CancellationToken, writeFile?: WriteFileCallback, getCustomTransformers?: (project: string) => CustomTransformers): Promise<ExitStatus>;
+    export interface SolutionBuilderAsync {
+        buildAsync(project?: string, cancellationToken?: CancellationToken, writeFile?: WriteFileCallback, getCustomTransformersAsync?: GetCustomTransformersAsync): Promise<ExitStatus | undefined>;
         clean(project?: string): ExitStatus;
-        buildReferencesAsync(project: string, cancellationToken?: CancellationToken, writeFile?: WriteFileCallback, getCustomTransformers?: (project: string) => CustomTransformers): Promise<ExitStatus>;
+        buildReferencesAsync(project: string, cancellationToken?: CancellationToken, writeFile?: WriteFileCallback, getCustomTransformersAsync?: GetCustomTransformersAsync): Promise<ExitStatus | undefined>;
         cleanReferences(project?: string): ExitStatus;
-        getNextInvalidatedProject(cancellationToken?: CancellationToken): InvalidatedProjectAsync<T> | undefined;
+        /**
+         * closeRequest:
+         *   - request that async buildAsync/buildReferencesAsync processing terminate, and wathces cleared, after any project currently being built is finished.
+         *   - In case of non-watch host, this call is a noop.
+         */
+        closeRequest(): void;
+        /**
+         * getNextInvalidatedProject
+         * Probably doesn't make sense with asyncInterface
+         */
+        //getNextInvalidatedProject(cancellationToken?: CancellationToken): InvalidatedProjectAsync<T> | undefined;
 
-        // Currently used for testing but can be made public if needed:
-        /*@internal*/ getBuildOrder(): AnyBuildOrder;
 
         // Testing only
+        /**
+         * buildInvalidatedProjectsRequest would only need to be made public if invalidateProject were made public;
+         */
+        /*@internal*/ getBuildOrder(): AnyBuildOrder;
+        /*@internal*/ buildInvalidatedProjectsRequest(): void;
         /*@internal*/ getUpToDateStatusOfProject(project: string): UpToDateStatus;
         /*@internal*/ invalidateProject(configFilePath: ResolvedConfigFilePath, reloadLevel?: ConfigFileProgramReloadLevel): void;
-        /*@internal*/ buildNextInvalidatedProjectAsync(): Promise<void>;
+        ///*@internal*/ buildNextInvalidatedProjectAsync(): Promise<void>;
         /*@internal*/ getAllParsedConfigs(): readonly ParsedCommandLine[];
         /*@internal*/ close(): void;
     }
 
-    // /**
-    //  * Create a function that reports watch status by writing to the system and handles the formating of the diagnostic
-    //  */
-    // export function createBuilderStatusReporter(system: System, pretty?: boolean): DiagnosticReporter {
-    //     return diagnostic => {
-    //         let output = pretty ? `[${formatColorAndReset(getLocaleTimeString(system), ForegroundColorEscapeSequences.Grey)}] ` : `${getLocaleTimeString(system)} - `;
-    //         output += `${flattenDiagnosticMessageText(diagnostic.messageText, system.newLine)}${system.newLine + system.newLine}`;
-    //         system.write(output);
-    //     };
-    // }
-
     function createSolutionBuilderHostBaseAsync<T extends BuilderProgram>(system: System, createProgram: CreateProgram<T> | undefined, reportDiagnostic?: DiagnosticReporter, reportSolutionBuilderStatus?: DiagnosticReporter) {
-        const host = createProgramHost(system, createProgram) as SolutionBuilderHostBaseAsync<T>;
+        const host = createProgramHost(system, createProgram) as SolutionBuilderHostBaseAsync<T>; // createProgramHost doesn't include member "createProgramHookAsync"
+        host.createProgramHookAsync = async (...args: Parameters<CreateProgram<T>>) => host.createProgram(...args);
         host.getModifiedTime = system.getModifiedTime ? path => system.getModifiedTime!(path) : returnUndefined;
         host.setModifiedTime = system.setModifiedTime ? (path, date) => system.setModifiedTime!(path, date) : noop;
         host.deleteFile = system.deleteFile ? path => system.deleteFile!(path) : noop;
@@ -195,11 +208,11 @@ namespace ts {
         return result;
     }
 
-    export function createSolutionBuilderAsync<T extends BuilderProgram>(host: SolutionBuilderHost<T>, rootNames: readonly string[], defaultOptions: BuildOptions): SolutionBuilderAsync<T> {
+    export function createSolutionBuilderAsync<T extends BuilderProgram>(host: SolutionBuilderHostAsync<T>, rootNames: readonly string[], defaultOptions: BuildOptions): SolutionBuilderAsync {
         return createSolutionBuilderWorkerAsync(/*watch*/ false, host, rootNames, defaultOptions);
     }
 
-    export function createSolutionBuilderWithWatchAsync<T extends BuilderProgram>(host: SolutionBuilderWithWatchHost<T>, rootNames: readonly string[], defaultOptions: BuildOptions, baseWatchOptions?: WatchOptions): SolutionBuilderAsync<T> {
+    export function createSolutionBuilderWithWatchAsync<T extends BuilderProgram>(host: SolutionBuilderWithWatchHostAsync<T>, rootNames: readonly string[], defaultOptions: BuildOptions, baseWatchOptions?: WatchOptions): SolutionBuilderAsync {
         return createSolutionBuilderWorkerAsync(/*watch*/ true, host, rootNames, defaultOptions, baseWatchOptions);
     }
 
@@ -212,6 +225,17 @@ namespace ts {
         originalWriteFile: CompilerHost["writeFile"] | undefined;
         originalReadFileWithCache: CompilerHost["readFile"];
         originalGetSourceFile: CompilerHost["getSourceFile"];
+    }
+    interface DeferredPromise {
+        waitable: Promise<void>;
+        resolve: () => void;
+    };
+    function createDeferredPromise(): DeferredPromise{
+        const dp: Partial<DeferredPromise>={};
+        dp.waitable = new Promise(resolve=>{
+            dp.resolve=resolve;
+        });
+        return dp as DeferredPromise;
     }
     interface SolutionBuilderStateAsync<T extends BuilderProgram = BuilderProgram> extends WatchFactory<WatchType, ResolvedConfigFileName> {
         readonly host: SolutionBuilderHostAsync<T>;
@@ -249,7 +273,7 @@ namespace ts {
         projectCompilerOptions: CompilerOptions;
         cache: SolutionBuilderStateCache | undefined;
         allProjectBuildPending: boolean;
-        needsSummary: boolean;
+        //needsSummary: boolean;
         watchAllProjectsPending: boolean;
         currentInvalidatedProject: InvalidatedProjectAsync<T> | undefined;
 
@@ -265,10 +289,14 @@ namespace ts {
         timerToBuildInvalidatedProject: any;
         reportFileChangeDetected: boolean;
         writeLog: (s: string) => void;
+
+        // added for async
+        closeRequested: boolean;
+        deferredPromise: DeferredPromise | undefined;
     }
 
     function createSolutionBuilderStateAsync<T extends BuilderProgram>(watch: boolean, hostOrHostWithWatch: SolutionBuilderHostAsync<T> | SolutionBuilderWithWatchHostAsync<T>, rootNames: readonly string[], options: BuildOptions, baseWatchOptions: WatchOptions | undefined): SolutionBuilderStateAsync<T> {
-        const host = hostOrHostWithWatch; // as SolutionBuilderHost<T>;
+        const host = hostOrHostWithWatch; // as SolutionBuilderHostAsync<T>;
         const hostWithWatch = hostOrHostWithWatch as SolutionBuilderWithWatchHostAsync<T>;
         const currentDirectory = host.getCurrentDirectory();
         const getCanonicalFileName = createGetCanonicalFileName(host.useCaseSensitiveFileNames());
@@ -331,7 +359,7 @@ namespace ts {
             projectCompilerOptions: baseCompilerOptions,
             cache: undefined,
             allProjectBuildPending: true,
-            needsSummary: true,
+            //needsSummary: true,
             watchAllProjectsPending: watch,
             currentInvalidatedProject: undefined,
 
@@ -349,6 +377,9 @@ namespace ts {
             watchFile,
             watchDirectory,
             writeLog,
+
+            deferredPromise: createDeferredPromise(),
+            closeRequested:false
         };
 
         return state;
@@ -633,7 +664,7 @@ namespace ts {
         /**
          *  To dispose this project and ensure that all the necessary actions are taken and state is updated accordingly
          */
-        doneAsync(cancellationToken?: CancellationToken, writeFile?: WriteFileCallback, customTransformers?: CustomTransformers): Promise<ExitStatus>;
+        doneAsync(cancellationToken?: CancellationToken, writeFile?: WriteFileCallback, getCustomTransformersAsync?: GetCustomTransformersAsync): Promise<ExitStatus>;
         getCompilerOptions(): CompilerOptions;
         getCurrentDirectory(): string;
     }
@@ -668,7 +699,7 @@ namespace ts {
          * (if that emit of that source file is required it would be emitted again when making sure invalidated project is completed)
          * This emit is not considered actual emit (and hence uptodate status is not reflected if
          */
-        emitAsync(targetSourceFile?: SourceFile, writeFile?: WriteFileCallback, cancellationToken?: CancellationToken, emitOnlyDtsFiles?: boolean, customTransformers?: CustomTransformers): Promise<EmitResult | undefined>;
+        emitAsync(targetSourceFile?: SourceFile, writeFile?: WriteFileCallback, cancellationToken?: CancellationToken, emitOnlyDtsFiles?: boolean, getCustomTransformersAsync?: GetCustomTransformersAsync): Promise<EmitResult | undefined>;
         // TODO(shkamat):: investigate later if we can emit even when there are declaration diagnostics
         // emitNextAffectedFile(writeFile?: WriteFileCallback, cancellationToken?: CancellationToken, customTransformers?: CustomTransformers): AffectedFileResult<EmitResult>;
     }
@@ -676,7 +707,7 @@ namespace ts {
     // type UpdateBundleProject<T extends BuilderProgram> = never & T;
     export interface UpdateBundleProjectAsync<T extends BuilderProgram> extends InvalidatedProjectBaseAsync {
         readonly kind: InvalidatedProjectKind.UpdateBundle;
-        emitAsync(writeFile?: WriteFileCallback, customTransformers?: CustomTransformers): Promise<EmitResult | BuildInvalidedProjectAsync<T> | undefined>;
+        emitAsync(writeFile?: WriteFileCallback, getCustomTransformersAsync?: GetCustomTransformersAsync): Promise<EmitResult | BuildInvalidedProjectAsync<T> | undefined>;
     }
     //type InvalidatedProject<T extends BuilderProgram> = never & T;
     export type InvalidatedProjectAsync<T extends BuilderProgram> = UpdateOutputFileStampsProjectAsync | BuildInvalidedProjectAsync<T> | UpdateBundleProjectAsync<T>;
@@ -797,12 +828,13 @@ namespace ts {
                             ((program as any as SemanticDiagnosticsBuilderProgram).getSemanticDiagnosticsOfNextAffectedFile) &&
                             (program as any as SemanticDiagnosticsBuilderProgram).getSemanticDiagnosticsOfNextAffectedFile(cancellationToken, ignoreSourceFile)
                     ),
-                emitAsync: async (targetSourceFile, writeFile, cancellationToken, emitOnlyDtsFiles, customTransformers) => {
+                emitAsync: async (targetSourceFile, writeFile, cancellationToken, emitOnlyDtsFiles, getCustomTransformersAsync) => {
                     if (targetSourceFile || emitOnlyDtsFiles) {
                         await executeStepsAsync(BuildStep.CreateProgram);
-                        if (program && !customTransformers && state.host.getCustomTransformersAsync){
-                            customTransformers = await state.host.getCustomTransformersAsync(project, program.getProgram());
-                        }
+                        const customTransformers = await (async () => {
+                            if (getCustomTransformersAsync) return /* await */ getCustomTransformersAsync(project,program?.getProgram());
+                            else if (state.host.getCustomTransformersAsync) return /* await */ state.host.getCustomTransformersAsync(project,program?.getProgram());
+                        })();
                         return program && program.emit(targetSourceFile, writeFile, cancellationToken, emitOnlyDtsFiles, customTransformers);
                     }
                     await executeStepsAsync(BuildStep.SemanticDiagnostics, cancellationToken);
@@ -810,7 +842,7 @@ namespace ts {
                         return /* await */ emitBuildInfoAsync(writeFile, cancellationToken);
                     }
                     if (step !== BuildStep.Emit) return undefined;
-                    return /* await */ emitAsync(writeFile, cancellationToken, customTransformers);
+                    return /* await */ emitAsync(writeFile, cancellationToken, getCustomTransformersAsync);
                 },
                 doneAsync
             };
@@ -823,16 +855,16 @@ namespace ts {
                 buildOrder,
                 getCompilerOptions: () => config.options,
                 getCurrentDirectory: () => state.currentDirectory,
-                emitAsync: async (writeFile: WriteFileCallback | undefined, customTransformers: CustomTransformers | undefined) => {
+                emitAsync: async (writeFile: WriteFileCallback | undefined, getCustomTransformersAsync: GetCustomTransformersAsync | undefined) => {
                     if (step !== BuildStep.EmitBundle) return invalidatedProjectOfBundle;
-                    return /* await */ emitBundleAsync(writeFile, customTransformers);
+                    return /* await */ emitBundleAsync(writeFile, getCustomTransformersAsync);
                 },
                 doneAsync,
             };
         }
 
-        async function doneAsync(cancellationToken?: CancellationToken, writeFile?: WriteFileCallback, customTransformers?: CustomTransformers) {
-            await executeStepsAsync(BuildStep.Done, cancellationToken, writeFile, customTransformers);
+        async function doneAsync(cancellationToken?: CancellationToken, writeFile?: WriteFileCallback, getCustomTransformersAsync?: GetCustomTransformersAsync) {
+            await executeStepsAsync(BuildStep.Done, cancellationToken, writeFile, getCustomTransformersAsync);
             return doneInvalidatedProject(state, projectPath);
         }
 
@@ -845,7 +877,7 @@ namespace ts {
             return (await withProgramOrUndefinedAsync(action)) || emptyArray;
         }
 
-        function createProgram() {
+        async function createProgramAsync() {
             Debug.assert(program === undefined);
 
             if (state.options.dry) {
@@ -872,7 +904,7 @@ namespace ts {
             state.typeReferenceDirectiveResolutionCache?.update(config.options);
 
             // Create program
-            program = host.createProgram(
+            program = await host.createProgramHookAsync(
                 config.fileNames,
                 config.options,
                 compilerHost,
@@ -930,7 +962,7 @@ namespace ts {
             );
         }
 
-        async function emitAsync(writeFileCallback?: WriteFileCallback, cancellationToken?: CancellationToken, customTransformers?: CustomTransformers): Promise<EmitResult> {
+        async function emitAsync(writeFileCallback?: WriteFileCallback, cancellationToken?: CancellationToken, getCustomTransformersAsync?: GetCustomTransformersAsync): Promise<EmitResult> {
             Debug.assertIsDefined(program);
             Debug.assert(step === BuildStep.Emit);
             // Before emitting lets backup state, so we can revert it back if there are declaration errors to handle emit and declaration errors correctly
@@ -938,6 +970,10 @@ namespace ts {
             let declDiagnostics: Diagnostic[] | undefined;
             const reportDeclarationDiagnostics = (d: Diagnostic) => (declDiagnostics || (declDiagnostics = [])).push(d);
             const outputFiles: OutputFile[] = [];
+            const customTransformers = await (async () => {
+                if (getCustomTransformersAsync) return /* await */ getCustomTransformersAsync(project,program?.getProgram());
+                else if (state.host.getCustomTransformersAsync) return /* await */ state.host.getCustomTransformersAsync(project,program?.getProgram());
+            })();
             const { emitResult } = emitFilesAndReportErrors(
                 program,
                 reportDeclarationDiagnostics,
@@ -946,7 +982,7 @@ namespace ts {
                 (name, text, writeByteOrderMark) => outputFiles.push({ name, text, writeByteOrderMark }),
                 cancellationToken,
                 /*emitOnlyDts*/ false,
-                customTransformers || (state.host.getCustomTransformersAsync && await state.host.getCustomTransformersAsync(project, program.getProgram()))
+                customTransformers
             );
             // Don't emit .d.ts if there are decl file errors
             if (declDiagnostics) {
@@ -1058,13 +1094,13 @@ namespace ts {
                     newestDeclarationFileContentChangedTime,
                 oldestOutputFileName
             });
-            await afterProgramDoneAsync(state, program, config);
+            await afterProgramDoneAsync(state, program, config); // never called if emitDiagnostics.length>0
             step = BuildStep.QueueReferencingProjects;
             buildResult = resultFlags;
-            return emitDiagnostics;
+            return emitDiagnostics; // This appears to only return an empty array.
         }
 
-        async function emitBundleAsync(writeFileCallback?: WriteFileCallback, customTransformers?: CustomTransformers): Promise<EmitResult | BuildInvalidedProjectAsync<T> | undefined> {
+        async function emitBundleAsync(writeFileCallback?: WriteFileCallback, getCustomTransformersAsync?: GetCustomTransformersAsync): Promise<EmitResult | BuildInvalidedProjectAsync<T> | undefined> {
             Debug.assert(kind === InvalidatedProjectKind.UpdateBundle);
             if (state.options.dry) {
                 reportStatus(state, Diagnostics.A_non_dry_build_would_update_output_of_project_0, project);
@@ -1074,7 +1110,10 @@ namespace ts {
             }
 
             if (state.options.verbose) reportStatus(state, Diagnostics.Updating_output_of_project_0, project);
-
+            const customTransformers = await (async () => {
+                if (getCustomTransformersAsync) return /* await */ getCustomTransformersAsync(project,program?.getProgram());
+                else if (state.host.getCustomTransformersAsync) return /* await */ state.host.getCustomTransformersAsync(project,program?.getProgram());
+            })();
             // Update js, and source map
             const { compilerHost } = state;
             state.projectCompilerOptions = config.options;
@@ -1085,8 +1124,8 @@ namespace ts {
                     const refName = resolveProjectName(state, ref.path);
                     return parseConfigFile(state, refName, toResolvedConfigFilePath(state, refName));
                 },
-                customTransformers || (state.host.getCustomTransformersAsync && await state.host.getCustomTransformersAsync(project, (!program)?undefined:program.getProgram()))
-                );
+                customTransformers
+            );
 
             if (isString(outputFiles)) {
                 reportStatus(state, Diagnostics.Cannot_update_output_of_project_0_because_there_was_error_reading_file_1, project, relName(state, outputFiles));
@@ -1122,12 +1161,12 @@ namespace ts {
             return { emitSkipped: false, diagnostics: emitDiagnostics };
         }
 
-        async function executeStepsAsync(till: BuildStep, cancellationToken?: CancellationToken, writeFile?: WriteFileCallback, customTransformers?: CustomTransformers): Promise<void> {
+        async function executeStepsAsync(till: BuildStep, cancellationToken?: CancellationToken, writeFile?: WriteFileCallback, getCustomTransformersAsync?: GetCustomTransformersAsync): Promise<void> {
             while (step <= till && step < BuildStep.Done) {
                 const currentStep = step;
                 switch (step) {
                     case BuildStep.CreateProgram:
-                        createProgram();
+                        await createProgramAsync();
                         break;
 
                     case BuildStep.SyntaxDiagnostics:
@@ -1139,7 +1178,7 @@ namespace ts {
                         break;
 
                     case BuildStep.Emit:
-                        await emitAsync(writeFile, cancellationToken, customTransformers);
+                        await emitAsync(writeFile, cancellationToken, getCustomTransformersAsync);
                         break;
 
                     case BuildStep.EmitBuildInfo:
@@ -1147,13 +1186,13 @@ namespace ts {
                         break;
 
                     case BuildStep.EmitBundle:
-                        await emitBundleAsync(writeFile, customTransformers);
+                        await emitBundleAsync(writeFile, getCustomTransformersAsync);
                         break;
 
                     case BuildStep.BuildInvalidatedProjectOfBundle:
                         Debug.checkDefined(invalidatedProjectOfBundle);
                         if (invalidatedProjectOfBundle) {
-                            invalidatedProjectOfBundle.doneAsync(cancellationToken, writeFile, customTransformers);
+                            invalidatedProjectOfBundle.doneAsync(cancellationToken, writeFile, getCustomTransformersAsync);
                         }
                         step = BuildStep.Done;
                         break;
@@ -1687,35 +1726,130 @@ namespace ts {
             }
         }
     }
-
-    async function buildAsync(state: SolutionBuilderStateAsync, project?: string, cancellationToken?: CancellationToken, writeFile?: WriteFileCallback, getCustomTransformers?: (project: string) => CustomTransformers, onlyReferences?: boolean): Promise<ExitStatus> {
-        const buildOrder = getBuildOrderFor(state, project, onlyReferences);
-        if (!buildOrder) return ExitStatus.InvalidProject_OutputsSkipped;
-
-        setupInitialBuild(state, cancellationToken);
-
-        let reportQueue = true;
-        let successfulProjects = 0;
-        while (true) {
-            const invalidatedProject = getNextInvalidatedProject(state, buildOrder, reportQueue);
-            if (!invalidatedProject) break;
-            reportQueue = false;
-            await invalidatedProject.doneAsync(cancellationToken, writeFile, getCustomTransformers?.(invalidatedProject.project));
-            if (!state.diagnostics.has(invalidatedProject.projectPath)) successfulProjects++;
-        }
-
-        disableCache(state);
-        reportErrorSummary(state, buildOrder);
-        startWatching(state, buildOrder);
-
-        return isCircularBuildOrder(buildOrder)
-            ? ExitStatus.ProjectReferenceCycle_OutputsSkipped
-            : !buildOrder.some(p => state.diagnostics.has(toResolvedConfigFilePath(state, p)))
-                ? ExitStatus.Success
-                : successfulProjects
-                    ? ExitStatus.DiagnosticsPresent_OutputsGenerated
-                    : ExitStatus.DiagnosticsPresent_OutputsSkipped;
+    function closeRequest(state: SolutionBuilderStateAsync){
+        state.closeRequested = true;
+        if (state.deferredPromise) state.deferredPromise.resolve();
     }
+    /**
+     * Only returns ExitStatus when NOT a watch host.  Otherwise returns undefined;
+     * However, the optional callback solutionSettled will be called with argument "totalErrors" whenever
+     * the solution is about to wait for the next watch.
+     * @param state
+     * @param project
+     * @param cancellationToken
+     * @param writeFile
+     * @param getCustomTransformersAsync
+     * @param onlyReferences
+     * @returns
+     */
+    async function buildUntilFinishedAsync(state: SolutionBuilderStateAsync, project?: string, cancellationToken?: CancellationToken, writeFile?: WriteFileCallback, getCustomTransformersAsync?: GetCustomTransformersAsync, onlyReferences?: boolean): Promise<ExitStatus | undefined> {
+
+        async function local_buildNextInvalidatedProjectAsync(state: SolutionBuilderStateAsync, buildOrder: AnyBuildOrder): Promise<ExitStatus | undefined> {
+            state.timerToBuildInvalidatedProject = undefined;
+            if (state.reportFileChangeDetected) {
+                state.reportFileChangeDetected = false;
+                state.projectErrorsReported.clear();
+                reportWatchStatus(state, Diagnostics.File_change_detected_Starting_incremental_compilation);
+            }
+            //const buildOrder = getBuildOrder(state);
+            // getNextInvalidatedProject also detes from build queue
+            const invalidatedProject = getNextInvalidatedProject(state, buildOrder, /*reportQueue*/ false);
+            if (invalidatedProject) {
+                return /* await */ invalidatedProject.doneAsync();
+                // if (state.projectPendingBuild.size) {
+                //     // Schedule next project for build
+                //     if (state.watch && !state.timerToBuildInvalidatedProject) {
+                //         scheduleBuildInvalidatedProject(state);
+                //     }
+                //     return;
+                // }
+            }
+            // disableCache(state);
+            // reportErrorSummary(state, buildOrder);
+        }
+        let totalErrors;
+        const initialBuildOrder = getBuildOrderFor(state, project, onlyReferences);
+        {
+            if (!initialBuildOrder) return ExitStatus.InvalidProject_OutputsSkipped;
+
+            setupInitialBuild(state, cancellationToken);
+
+            let reportQueue = true;
+            let successfulProjects = 0;
+            while (true) {
+                const invalidatedProject = getNextInvalidatedProject(state, initialBuildOrder, reportQueue);
+                if (!invalidatedProject) break;
+                reportQueue = false;
+                await invalidatedProject.doneAsync(cancellationToken, writeFile, getCustomTransformersAsync);
+                if (!state.diagnostics.has(invalidatedProject.projectPath)) successfulProjects++;
+            }
+            disableCache(state);
+            totalErrors = reportErrorSummary(state, initialBuildOrder); // Report results of initial (no waits involved) solution build
+            if (!state.watch){
+                return isCircularBuildOrder(initialBuildOrder)
+                ? ExitStatus.ProjectReferenceCycle_OutputsSkipped
+                : !initialBuildOrder.some(p => state.diagnostics.has(toResolvedConfigFilePath(state, p)))
+                    ? ExitStatus.Success
+                    : successfulProjects
+                        ? ExitStatus.DiagnosticsPresent_OutputsGenerated
+                        : ExitStatus.DiagnosticsPresent_OutputsSkipped;
+            }
+        }
+        startWatching(state, initialBuildOrder);
+        let local_needsSummary = false;
+        while (true) {
+            if (state.closeRequested || cancellationToken?.isCancellationRequested()) break;
+            const buildOrder = getBuildOrder(state);
+            const r = await local_buildNextInvalidatedProjectAsync(state, buildOrder);
+            if (r===undefined){
+                disableCache(state);
+                state.deferredPromise = createDeferredPromise();
+                if (local_needsSummary) {
+                    totalErrors = reportErrorSummary(state, buildOrder);
+                }
+                if (state.hostWithWatch.solutionSettledAsync){
+                    await state.hostWithWatch.solutionSettledAsync(totalErrors);
+                }
+                // sys.write("buildUntilFinishedAsync:: beginning await state.deferredPromise.waitable"+sys.newLine);
+                await state.deferredPromise.waitable;
+                // sys.write("buildUntilFinishedAsync:: finished await state.deferredPromise.waitable"+sys.newLine);
+                // any state.deferredPromise.resolved() called on this state.deferredPromise called after this are just ignored.
+            }
+            else {
+                local_needsSummary = true;
+            }
+        }
+        // sys.write("buildUntilFinishedAsync:: exit (not error)"+sys.newLine);
+    }
+
+    // async function buildAsync(state: SolutionBuilderStateAsync, project?: string, cancellationToken?: CancellationToken, writeFile?: WriteFileCallback, getCustomTransformersAsync?: GetCustomTransformersAsync, onlyReferences?: boolean): Promise<ExitStatus> {
+    //     const buildOrder = getBuildOrderFor(state, project, onlyReferences);
+    //     if (!buildOrder) return ExitStatus.InvalidProject_OutputsSkipped;
+
+    //     setupInitialBuild(state, cancellationToken);
+
+    //     let reportQueue = true;
+    //     let successfulProjects = 0;
+    //     while (true) {
+    //         const invalidatedProject = getNextInvalidatedProject(state, buildOrder, reportQueue);
+    //         if (!invalidatedProject) break;
+    //         reportQueue = false;
+    //         await invalidatedProject.doneAsync(cancellationToken, writeFile, getCustomTransformersAsync);
+    //         if (!state.diagnostics.has(invalidatedProject.projectPath)) successfulProjects++;
+    //     }
+
+    //     disableCache(state);
+    //     reportErrorSummary(state, buildOrder); // Report results of initial (no waits involved) solution build
+    //     startWatching(state, buildOrder);
+
+    //     return isCircularBuildOrder(buildOrder)
+    //         ? ExitStatus.ProjectReferenceCycle_OutputsSkipped
+    //         : !buildOrder.some(p => state.diagnostics.has(toResolvedConfigFilePath(state, p)))
+    //             ? ExitStatus.Success
+    //             : successfulProjects
+    //                 ? ExitStatus.DiagnosticsPresent_OutputsGenerated
+    //                 : ExitStatus.DiagnosticsPresent_OutputsSkipped;
+    // }
 
     function clean(state: SolutionBuilderStateAsync, project?: string, onlyReferences?: boolean) {
         const buildOrder = getBuildOrderFor(state, project, onlyReferences);
@@ -1761,6 +1895,13 @@ namespace ts {
         return ExitStatus.Success;
     }
 
+    /**
+     * invalidateProject is called from clean, from invalidateProjectAndScheduleBuilds, and from the outer invalidateProject exposed to users.
+     * Note that queueReferencingProjects does NOT call invalidate project, instead it calls addProjToQueue directly, because ???.
+     * @param state
+     * @param resolved
+     * @param reloadLevel
+     */
     function invalidateProject(state: SolutionBuilderStateAsync, resolved: ResolvedConfigFilePath, reloadLevel: ConfigFileProgramReloadLevel) {
         // If host implements getParsedCommandLine, we cant get list of files from parseConfigFileHost
         if (state.host.getParsedCommandLine && reloadLevel === ConfigFileProgramReloadLevel.Partial) {
@@ -1770,19 +1911,24 @@ namespace ts {
             state.configFileCache.delete(resolved);
             state.buildOrder = undefined;
         }
-        state.needsSummary = true;
+        //state.needsSummary = true;
         clearProjectStatus(state, resolved);
         addProjToQueue(state, resolved, reloadLevel);
         enableCache(state);
     }
 
+    /**
+     * invalidateProjectAndScheduleBuilds is called only in watch callbacks.
+     * The reason for using a timeout delay to calll buildInvalidatedProjectsRequest
+     * is prevent thrashing in case multiple files are are changed at once, e.g., in a global replace.
+     * @param state
+     * @param resolvedPath
+     * @param reloadLevel
+     */
     function invalidateProjectAndScheduleBuilds(state: SolutionBuilderStateAsync, resolvedPath: ResolvedConfigFilePath, reloadLevel: ConfigFileProgramReloadLevel) {
         state.reportFileChangeDetected = true;
         invalidateProject(state, resolvedPath, reloadLevel);
-        scheduleBuildInvalidatedProject(state);
-    }
-
-    function scheduleBuildInvalidatedProject(state: SolutionBuilderStateAsync) {
+        // scheduleBuildInvalidatedProject(state, 250);
         const { hostWithWatch } = state;
         if (!hostWithWatch.setTimeout || !hostWithWatch.clearTimeout) {
             return;
@@ -1790,30 +1936,54 @@ namespace ts {
         if (state.timerToBuildInvalidatedProject) {
             hostWithWatch.clearTimeout(state.timerToBuildInvalidatedProject);
         }
-        state.timerToBuildInvalidatedProject = hostWithWatch.setTimeout(buildNextInvalidatedProjectAsync, 250, state);
-    }
+        state.timerToBuildInvalidatedProject = hostWithWatch.setTimeout(buildInvalidatedProjectsRequest, 250, state);
 
-    async function buildNextInvalidatedProjectAsync(state: SolutionBuilderStateAsync) {
-        state.timerToBuildInvalidatedProject = undefined;
-        if (state.reportFileChangeDetected) {
-            state.reportFileChangeDetected = false;
-            state.projectErrorsReported.clear();
-            reportWatchStatus(state, Diagnostics.File_change_detected_Starting_incremental_compilation);
-        }
-        const buildOrder = getBuildOrder(state);
-        const invalidatedProject = getNextInvalidatedProject(state, buildOrder, /*reportQueue*/ false);
-        if (invalidatedProject) {
-            await invalidatedProject.doneAsync();
-            if (state.projectPendingBuild.size) {
-                // Schedule next project for build
-                if (state.watch && !state.timerToBuildInvalidatedProject) {
-                    scheduleBuildInvalidatedProject(state);
-                }
-                return;
-            }
-        }
-        disableCache(state);
-        reportErrorSummary(state, buildOrder);
+    }
+    // /**
+    //  * scheduleBuildInvalidatedProject is only called from invalidateProjectAndScheduleBuilds .
+    //  * @param state
+    //  * @returns
+    //  */
+    // function scheduleBuildInvalidatedProject(state: SolutionBuilderStateAsync, waitMs: number) {
+    //     const { hostWithWatch } = state;
+    //     if (!hostWithWatch.setTimeout || !hostWithWatch.clearTimeout) {
+    //         return;
+    //     }
+    //     if (state.timerToBuildInvalidatedProject) {
+    //         hostWithWatch.clearTimeout(state.timerToBuildInvalidatedProject);
+    //     }
+    //     state.timerToBuildInvalidatedProject = hostWithWatch.setTimeout(buildInvalidatedProjectsRequest, waitMs, state);
+    // }
+
+    /**
+     * TODO: Change name to "buildInvalidatedProjectsRequest" and make it NOT async
+     * buildNextInvalidatedProjectAsync is passed as the callback to setTimeout in scheduleBuildInvalidatedProject,
+     * and is also exposed to user from SolutionBuilderAsync
+     * @param state
+     * @returns
+     */
+    function buildInvalidatedProjectsRequest(state: SolutionBuilderStateAsync) {
+        if (state.deferredPromise) state.deferredPromise.resolve();
+        // state.timerToBuildInvalidatedProject = undefined;
+        // if (state.reportFileChangeDetected) {
+        //     state.reportFileChangeDetected = false;
+        //     state.projectErrorsReported.clear();
+        //     reportWatchStatus(state, Diagnostics.File_change_detected_Starting_incremental_compilation);
+        // }
+        // const buildOrder = getBuildOrder(state);
+        // const invalidatedProject = getNextInvalidatedProject(state, buildOrder, /*reportQueue*/ false);
+        // if (invalidatedProject) {
+        //     await invalidatedProject.doneAsync();
+        //     if (state.projectPendingBuild.size) {
+        //         // Schedule next project for build
+        //         if (state.watch && !state.timerToBuildInvalidatedProject) {
+        //             scheduleBuildInvalidatedProject(state);
+        //         }
+        //         return;
+        //     }
+        // }
+        // disableCache(state);
+        // reportErrorSummary(state, buildOrder); // Project is "settled"
     }
 
     function watchConfigFile(state: SolutionBuilderStateAsync, resolved: ResolvedConfigFileName, resolvedPath: ResolvedConfigFilePath, parsed: ParsedCommandLine | undefined) {
@@ -1951,20 +2121,20 @@ namespace ts {
      * A SolutionBuilder has an immutable set of rootNames that are the "entry point" projects, but
      * can dynamically add/remove other projects based on changes on the rootNames' references
      */
-    function createSolutionBuilderWorkerAsync<T extends BuilderProgram>(watch: false, host: SolutionBuilderHost<T>, rootNames: readonly string[], defaultOptions: BuildOptions): SolutionBuilderAsync<T>;
-    function createSolutionBuilderWorkerAsync<T extends BuilderProgram>(watch: true, host: SolutionBuilderWithWatchHost<T>, rootNames: readonly string[], defaultOptions: BuildOptions, baseWatchOptions?: WatchOptions): SolutionBuilderAsync<T>;
-    function createSolutionBuilderWorkerAsync<T extends BuilderProgram>(watch: boolean, hostOrHostWithWatch: SolutionBuilderHost<T> | SolutionBuilderWithWatchHost<T>, rootNames: readonly string[], options: BuildOptions, baseWatchOptions?: WatchOptions): SolutionBuilderAsync<T> {
+    function createSolutionBuilderWorkerAsync<T extends BuilderProgram>(watch: false, host: SolutionBuilderHostAsync<T>, rootNames: readonly string[], defaultOptions: BuildOptions): SolutionBuilderAsync;
+    function createSolutionBuilderWorkerAsync<T extends BuilderProgram>(watch: true, host: SolutionBuilderWithWatchHostAsync<T>, rootNames: readonly string[], defaultOptions: BuildOptions, baseWatchOptions?: WatchOptions): SolutionBuilderAsync;
+    function createSolutionBuilderWorkerAsync<T extends BuilderProgram>(watch: boolean, hostOrHostWithWatch: SolutionBuilderHostAsync<T> | SolutionBuilderWithWatchHostAsync<T>, rootNames: readonly string[], options: BuildOptions, baseWatchOptions?: WatchOptions): SolutionBuilderAsync {
         const state = createSolutionBuilderStateAsync<T>(watch, hostOrHostWithWatch, rootNames, options, baseWatchOptions);
-        return {
-            buildAsync: (project, cancellationToken, writeFile, getCustomTransformers) => buildAsync(state, project, cancellationToken, writeFile, getCustomTransformers),
+        const builder: SolutionBuilderAsync = {
+            buildAsync: (project, cancellationToken, writeFile, getCustomTransformersAsync) => buildUntilFinishedAsync(state, project, cancellationToken, writeFile, getCustomTransformersAsync),
             clean: project => clean(state, project),
-            buildReferencesAsync: (project, cancellationToken, writeFile, getCustomTransformers) => buildAsync(state, project, cancellationToken, writeFile, getCustomTransformers, /*onlyReferences*/ true),
+            buildReferencesAsync: (project, cancellationToken, writeFile, getCustomTransformersAsync) => buildUntilFinishedAsync(state, project, cancellationToken, writeFile, getCustomTransformersAsync, /*onlyReferences*/ true),
             cleanReferences: project => clean(state, project, /*onlyReferences*/ true),
             //getNextInvalidatedProject(cancellationToken?: CancellationToken): InvalidatedProject<T> | undefined;
-            getNextInvalidatedProject: (cancellationToken?: CancellationToken) => {
-                setupInitialBuild(state, cancellationToken);
-                return getNextInvalidatedProject<T>(state, getBuildOrder(state), /*reportQueue*/ false);
-            },
+            // getNextInvalidatedProject: (cancellationToken?: CancellationToken) => {
+            //     setupInitialBuild(state, cancellationToken);
+            //     return getNextInvalidatedProject<T>(state, getBuildOrder(state), /*reportQueue*/ false);
+            // },
             getBuildOrder: () => getBuildOrder(state),
             getUpToDateStatusOfProject: project => {
                 const configFileName = resolveProjectName(state, project);
@@ -1972,14 +2142,17 @@ namespace ts {
                 return getUpToDateStatus(state, parseConfigFile(state, configFileName, configFilePath), configFilePath);
             },
             invalidateProject: (configFilePath, reloadLevel) => invalidateProject(state, configFilePath, reloadLevel || ConfigFileProgramReloadLevel.None),
-            buildNextInvalidatedProjectAsync: () => buildNextInvalidatedProjectAsync(state),
+            buildInvalidatedProjectsRequest: () => buildInvalidatedProjectsRequest(state),
             getAllParsedConfigs: () => arrayFrom(mapDefinedIterator(
                 state.configFileCache.values(),
                 config => isParsedCommandLine(config) ? config : undefined
             )),
-            close: () => stopWatching(state),
+            close: () => stopWatching(state), // NOT public
+            closeRequest: ()=>closeRequest(state)
         };
+        return builder;
     }
+
 
     function relName(state: SolutionBuilderStateAsync, path: string): string {
         return convertToRelativePath(path, state.currentDirectory, f => state.getCanonicalFileName(f));
@@ -2009,9 +2182,9 @@ namespace ts {
         reportAndStoreErrors(state, proj, [state.configFileCache.get(proj) as Diagnostic]);
     }
 
-    function reportErrorSummary(state: SolutionBuilderStateAsync, buildOrder: AnyBuildOrder) {
-        if (!state.needsSummary) return;
-        state.needsSummary = false;
+    function reportErrorSummary(state: SolutionBuilderStateAsync, buildOrder: AnyBuildOrder): number {
+        // if (!state.needsSummary) return;
+        // state.needsSummary = false;
         const canReportSummary = state.watch || !!state.host.reportErrorSummary;
         const { diagnostics } = state;
         let totalErrors = 0;
@@ -2040,6 +2213,7 @@ namespace ts {
         else if (state.host.reportErrorSummary) {
             state.host.reportErrorSummary(totalErrors, filesInError);
         }
+        return totalErrors;
     }
 
     /**
